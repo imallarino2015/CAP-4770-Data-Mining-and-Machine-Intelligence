@@ -1,5 +1,6 @@
 library(rpart)
 library(ROCR)
+library(ada)
 library(MASS)
 data(Boston)
 
@@ -10,57 +11,65 @@ data=Boston
 data$medv=ifelse(Boston$medv>21,1,0)
 training=sample(1:nrow(data),.8*nrow(data))
 
-#logistic function creation
-rmLog=glm(medv~rm,data=data[training,],family=binomial)
-lstatLog=glm(medv~lstat,data=data[training,],family=binomial)
+#Part 2
+#decision tree creation
+dTree=rpart(medv~rm+lstat,data=data[training,],method="class")
 
-#creating test sequences
-rmSeq=seq(min(data[-training,]$rm),
-	max(data[-training,]$rm),
-	len=nrow(data[-training,]))
-lstatSeq=seq(min(data[-training,]$lstat),
-	max(data[-training,]$lstat),
-	len=nrow(data[-training,]))
+#calculate tree accuracy
+prediction=predict(dTree,data[-training,],type="class")
+confMat=table(data[-training,]$medv,prediction)
+acc=(confMat[1,1]+confMat[2,2])/
+    (confMat[1,1]+confMat[1,2]+confMat[2,1]+confMat[2,2])
 
-#testing models
-rmPrediction=predict(rmLog,list(rm=rmSeq),type="response")
-lstatPrediction=predict(lstatLog,list(lstat=lstatSeq),type="response")
+print(confMat)
+print(acc)
 
-#plot regression lines
-png("rmLog.png")
-plot(data$rm,data$medv)
-lines(rmSeq,rmPrediction,col="red")
-dev.off()
+#Part 3
+#build bagging models
+n=c(5,10,20)
+baseClassifiers=list()
+for(i in 1:length(n)){
+    currentClassifiers=list()
+    for(j in 1:n[i]){
+        samp=sample(training,size=length(training),replace=T)
+        bag=data[samp,]
+        currentClassifiers=c(currentClassifiers,list(rpart(medv~.,data=bag,method="class")))
+    }
+    baseClassifiers=append(baseClassifiers,list(currentClassifiers))
+}
 
-png("lstatLog.png")
-plot(data$lstat,data$medv)
-lines(lstatSeq,lstatPrediction,col="blue")
-dev.off()
+#test bagging models' accuracies
+for(a in 1:length(n)){
+    votes=NULL
+    for(b in 1:n[a]){
+        baseClassifier=baseClassifiers[[a]][[b]]
+        pred=predict(baseClassifier,data[-training,])
+        label=ifelse(pred>.5,1,0)
+        if(is.null(votes))
+            votes=label
+        else
+            votes=votes+label
+    }
+    decision=ifelse(votes[,1]<votes[,2],1,0)
+    confMat=table(data[-training,]$medv,decision)
+    acc=(confMat[1,1]+confMat[2,2])/
+        (confMat[1,1]+confMat[1,2]+confMat[2,1]+confMat[2,2])
+    
+    print(paste("Bagging ",n[a]," models:",sep=""))
+    print(confMat)
+    print(acc)
+}
 
-#determine probabilities
-rmProbabilities=predict(rmLog,data[-training,],type="response")
-rmResults=ifelse(rmProbabilities>.5,1,0)
+#Part 4
+adaData=data
+for(a in 1:length(n)){
+    adaModel=ada(medv~.,adaData[training,],loss="exponential",type="discrete",iter=n[a])
+    pred=predict(adaModel,adaData[-training,])
+    confMat=table(adaData[-training,]$medv,pred)
+    acc=(confMat[1,1]+confMat[2,2])/
+        (confMat[1,1]+confMat[1,2]+confMat[2,1]+confMat[2,2])
 
-lstatProbabilities=predict(lstatLog,data[-training,],type="response")
-lstatResults=ifelse(lstatProbabilities>.5,1,0)
-
-#calculate performance
-rmProbPrediction=prediction(rmProbabilities,data[-training,]$medv)
-rmLogPerformance=performance(rmProbPrediction,"tpr","fpr")
-
-lstatProbPrediction=prediction(lstatProbabilities,data[-training,]$medv)
-lstatLogPerformance=performance(lstatProbPrediction,"tpr","fpr")
-
-#plot roc
-png("roc.png")
-plot(rmLogPerformance,col="red")
-plot(lstatLogPerformance,col="blue",add=T)
-abline(0,1,col="lightgray")
-dev.off()
-
-#calculate area under the curve
-rmAuc=performance(rmProbPrediction,"auc")
-print(rmAuc@y.values[[1]])
-
-lstatAuc=performance(lstatProbPrediction,"auc")
-print(lstatAuc@y.values[[1]])
+    print(paste("Adaptive boosting ",n[a]," models:",sep=""))
+    print(confMat)
+    print(acc)
+}
